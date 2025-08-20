@@ -15,7 +15,8 @@ OPENAI_MODELS = {
 }
 
 #GOOGLE_CLIENT_SECRETS = "webclient.json"
-SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly",
+          "https://www.googleapis.com/auth/drive.file",]
 REDIRECT_URI = "http://localhost:8000/auth/callback"
 FRONTEND_URL = "http://localhost:3000"
 SECRET_KEY = "supersecret"   # session secret
