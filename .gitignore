@@ -12,7 +12,7 @@ __pycache__/
 *.pem
 *.json
 service_key.json
-webclient.json
+auth_service/webclient.json
 
 # Node / React (if present)
 node_modules/

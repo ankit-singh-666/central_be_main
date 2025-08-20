@@ -1,12 +1,10 @@
 from fastapi.responses import StreamingResponse
-import google_auth_oauthlib.flow
 import googleapiclient.discovery
 import google.oauth2.credentials
-import config
-import os
 import io
 import zipfile
 from typing import List
+from kafka_producer import send_message   # ✅ Import Kafka producer
 
 
 def list_drive_files(credentials_dict, imageFetch=False):
@@ -24,15 +22,10 @@ def list_drive_files(credentials_dict, imageFetch=False):
 
     files = []
     page_token = None
-
-    # Base query: not trashed
     q = "trashed = false"
 
-    # Exclude images if imageFetch is False
     if not imageFetch:
-        # Exclude common image mime types, add others as needed
-        exclude_images_query = " and not mimeType contains 'image/'"
-        q += exclude_images_query
+        q += " and not mimeType contains 'image/'"
 
     try:
         while True:
@@ -54,7 +47,10 @@ def list_drive_files(credentials_dict, imageFetch=False):
 
 
 async def download_files(credentials_dict, file_ids: List[str]):
-    # Rebuild Credentials object
+    """
+    Downloads files from Google Drive, zips them,
+    and sends file IDs to Kafka for async processing.
+    """
     credentials = google.oauth2.credentials.Credentials(
         token=credentials_dict["token"],
         refresh_token=credentials_dict.get("refresh_token"),
@@ -64,43 +60,63 @@ async def download_files(credentials_dict, file_ids: List[str]):
         scopes=credentials_dict.get("scopes")
     )
 
-    drive_service = googleapiclient.discovery.build('drive', 'v3', credentials=credentials)
+    drive_service = googleapiclient.discovery.build("drive", "v3", credentials=credentials)
 
+    # Debug: Check authenticated user
+    about = drive_service.about().get(fields="user").execute()
+    print("Authenticated as:", about["user"]["emailAddress"])
+    print("Using scopes:", credentials.scopes)
+
+    # ✅ Send file IDs to Kafka
+    for file_id in file_ids:
+        await send_message(key="file_id", value={"file_id": file_id})
+        print(f"📤 File ID {file_id} sent to Kafka")
+
+    # Continue with zipping & returning response
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w") as zf:
         for file_id in file_ids:
-            meta = drive_service.files().get(fileId=file_id, fields="name,mimeType").execute()
-            filename = meta.get("name", f"{file_id}")
-            mime_type = meta.get("mimeType")
+            try:
+                meta = drive_service.files().get(
+                    fileId=file_id,
+                    fields="name,mimeType",
+                    supportsAllDrives=True
+                ).execute()
 
-            if mime_type.startswith("application/vnd.google-apps"):
-                # Export Google Docs/Sheets/Slides to suitable format
-                export_mimetypes = {
-                    "application/vnd.google-apps.document": "application/pdf",
-                    "application/vnd.google-apps.spreadsheet": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    "application/vnd.google-apps.presentation": "application/pdf",
-                }
-                export_mime = export_mimetypes.get(mime_type, "application/pdf")
-                request = drive_service.files().export_media(fileId=file_id, mimeType=export_mime)
-                file_data = request.execute()
+                filename = meta.get("name", f"{file_id}")
+                mime_type = meta.get("mimeType")
 
-                if export_mime == "application/pdf":
-                    filename += ".pdf"
-                elif export_mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-                    filename += ".xlsx"
-                elif export_mime == "application/vnd.openxmlformats-officedocument.presentationml.presentation":
-                    filename += ".pptx"
+                if mime_type.startswith("application/vnd.google-apps"):
+                    export_mimetypes = {
+                        "application/vnd.google-apps.document": "application/pdf",
+                        "application/vnd.google-apps.spreadsheet": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        "application/vnd.google-apps.presentation": "application/pdf",
+                    }
+                    export_mime = export_mimetypes.get(mime_type, "application/pdf")
+                    request = drive_service.files().export_media(
+                        fileId=file_id, mimeType=export_mime
+                    )
+                    file_data = request.execute()
 
-            else:
-                request = drive_service.files().get_media(fileId=file_id)
-                file_data = request.execute()
+                    if export_mime == "application/pdf":
+                        filename += ".pdf"
+                    elif export_mime.endswith(".spreadsheetml.sheet"):
+                        filename += ".xlsx"
+                    elif export_mime.endswith(".presentationml.presentation"):
+                        filename += ".pptx"
+                else:
+                    request = drive_service.files().get_media(
+                        fileId=file_id, supportsAllDrives=True
+                    )
+                    file_data = request.execute()
 
-            zf.writestr(filename, file_data)
+                zf.writestr(filename, file_data)
+
+            except Exception as e:
+                print(f"❌ Error downloading {file_id}: {e}")
+                continue
 
     zip_buffer.seek(0)
-
-    headers = {
-        "Content-Disposition": 'attachment; filename="drive_files.zip"'
-    }
+    headers = {"Content-Disposition": 'attachment; filename="drive_files.zip"'}
 
     return StreamingResponse(zip_buffer, media_type="application/zip", headers=headers)

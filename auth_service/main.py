@@ -15,7 +15,7 @@ app = FastAPI(title="MultiSourceIndexer API")
 app.add_middleware(SessionMiddleware, secret_key=config.SECRET_KEY)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[config.FRONTEND_URL],
+    allow_origins=[config.FRONTEND_URL, "http://localhost:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
